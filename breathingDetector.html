@@ -530,11 +530,18 @@
           // Initialize time if not already done
           if (startTime === null) {
             startTime = performance.now();
+            // Initialize lastRrTime to the start time in seconds if this is the very first RR interval packet
+            if (rrTimes.length === 0) {
+              lastRrTime = (startTime - startTime) / 1000; // Start at 0 relative time
+            }
           }
           
           // Number of RR intervals
-          const numRRIntervals = Math.floor((dataView.byteLength - offset) / 2);
-          
+          // Number of RR intervals
+         const numRRIntervals = Math.floor((dataView.byteLength - offset) / 2);
+          // Remove the fixed currentTime calculation outside the loop
+          // const currentTime = (startTime) / 1000; 
+
           for (let i = 0; i < numRRIntervals; i++) {
             // RR intervals are in 1/1024 seconds format, convert to milliseconds
             const rrRaw = dataView.getUint16(offset, true);
@@ -547,18 +554,25 @@
               continue;
             }
             
-            // Current time in seconds since start
-            const currentTime = (performance.now() - startTime) / 1000;
-            
+            // Calculate the timestamp for this RR interval
+            // It's the time of the *previous* beat + the current RR interval duration
+            const currentRrTimestamp = lastRrTime + (rrInterval / 1000);
+
             // Add RR interval to the arrays
             rrIntervals.push(rrInterval);
-            rrTimes.push(currentTime);
+            rrTimes.push(currentRrTimestamp);
             
-            // Update last RR time
-            lastRrTime = currentTime;
-            
+            // Update last RR time to the timestamp of the current beat
+            lastRrTime = currentRrTimestamp; 
+            // Remove the old printf lines
+            // printf('RR Interval:', rrInterval, 'ms');
+            // printf('Current Time:', currentTime, 's');
+            console.log(`RR Interval: ${rrInterval.toFixed(1)} ms, Timestamp: ${currentRrTimestamp.toFixed(3)} s`);
+
+
             // Update RR interval display
             rrIntervalElement.textContent = rrInterval.toFixed(0);
+
             
             // Limit array size
             if (rrIntervals.length > MAX_RR_POINTS) {
