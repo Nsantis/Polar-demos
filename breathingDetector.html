@@ -1,0 +1,1148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Polar H10 Breathing Monitor</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/numeric/1.2.6/numeric.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 20px;
+      background-color: #f5f5f5;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      background-color: white;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .button-container {
+      display: flex;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    button {
+      padding: 10px 20px;
+      font-size: 16px;
+      cursor: pointer;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      border-radius: 5px;
+      transition: background-color 0.3s;
+    }
+    button:hover {
+      background-color: #45a049;
+    }
+    button:disabled {
+      background-color: #cccccc;
+      cursor: not-allowed;
+    }
+    .charts-container {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+    }
+    @media (max-width: 768px) {
+      .charts-container {
+        grid-template-columns: 1fr;
+      }
+    }
+    .chart-wrapper {
+      height: 300px;
+      position: relative;
+    }
+    .stats-container {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      margin-top: 20px;
+    }
+    .stat-card {
+      background-color: #f9f9f9;
+      padding: 15px;
+      border-radius: 5px;
+      text-align: center;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    }
+    .stat-value {
+      font-size: 1.8em;
+      font-weight: bold;
+      margin: 5px 0;
+      color: #333;
+    }
+    .stat-label {
+      font-size: 0.9em;
+      color: #666;
+    }
+    .status {
+      text-align: center;
+      margin-top: 10px;
+      font-style: italic;
+      color: #666;
+    }
+    .error-message {
+      color: #d9534f;
+      font-weight: bold;
+    }
+    .browser-warning {
+      background-color: #fcf8e3;
+      border: 1px solid #faebcc;
+      color: #8a6d3b;
+      padding: 15px;
+      margin: 20px 0;
+      border-radius: 5px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Polar H10 Breathing Monitor</h1>
+    </div>
+    
+    <div id="browserWarning" class="browser-warning">
+      <strong>Warning:</strong> This application requires Web Bluetooth API support.
+      Please use Chrome or Edge on desktop, or Chrome on Android.
+    </div>
+    
+    <div class="button-container">
+      <button id="connectButton">Connect to Polar H10</button>
+      <button id="disconnectButton" disabled>Disconnect</button>
+      <button id="resetButton" disabled>Reset Data</button>
+    </div>
+    
+    <div class="stats-container">
+      <div class="stat-card">
+        <div class="stat-label">Heart Rate</div>
+        <div id="heartRate" class="stat-value">--</div>
+        <div class="stat-label">BPM</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Breathing Rate</div>
+        <div id="breathingRate" class="stat-value">--</div>
+        <div class="stat-label">br/min</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">RR Interval</div>
+        <div id="rrInterval" class="stat-value">--</div>
+        <div class="stat-label">ms</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Data Points</div>
+        <div id="dataPoints" class="stat-value">0</div>
+        <div class="stat-label">count</div>
+      </div>
+    </div>
+    
+    <div class="charts-container">
+      <div class="chart-wrapper">
+        <canvas id="ecgChart"></canvas>
+      </div>
+      <div class="chart-wrapper">
+        <canvas id="rrChart"></canvas>
+      </div>
+      <div class="chart-wrapper">
+        <canvas id="breathingChart"></canvas>
+      </div>
+      <div class="chart-wrapper">
+        <canvas id="spectrumChart"></canvas>
+      </div>
+    </div>
+    
+    <div class="status" id="statusText">Ready to connect. Click "Connect to Polar H10" to begin.</div>
+  </div>
+
+  <script>
+    // Wait for DOM to be fully loaded
+    document.addEventListener('DOMContentLoaded', function() {
+      // Check if Web Bluetooth API is supported
+      if (!navigator.bluetooth) {
+        document.getElementById('browserWarning').style.display = 'block';
+        document.getElementById('connectButton').disabled = true;
+        updateStatus('Web Bluetooth API is not supported in this browser. Please use Chrome or Edge.');
+        return;
+      }
+      
+      // Bluetooth UUIDs for Polar H10
+      const DEVICE_NAME_PREFIX = 'Polar H10';
+      const HEART_RATE_SERVICE_UUID = '0000180d-0000-1000-8000-00805f9b34fb';
+      const HEART_RATE_CHARACTERISTIC_UUID = '00002a37-0000-1000-8000-00805f9b34fb';
+      const PMD_SERVICE_UUID = 'fb005c80-02e7-f387-1cad-8acd2d8df0c8';
+      const PMD_CONTROL_UUID = 'fb005c81-02e7-f387-1cad-8acd2d8df0c8';
+      const PMD_DATA_UUID = 'fb005c82-02e7-f387-1cad-8acd2d8df0c8';
+      
+      // Global variables
+      let device = null;
+      let server = null;
+      let hrCharacteristic = null;
+      let dataCharacteristic = null;
+      let ecgChart = null;
+      let rrChart = null;
+      let breathingChart = null;
+      let spectrumChart = null;
+      
+      // Data storage
+      let ecgDataPoints = [];
+      let rrIntervals = [];
+      let rrTimes = [];
+      let breathingRates = [];
+      let breathingTimes = [];
+      let startTime = null;
+      let lastRrTime = 0;
+      
+      // Constants
+      const MAX_ECG_POINTS = 2600; // ~10 seconds at 130 Hz
+      const MAX_RR_POINTS = 600;   // ~10 minutes of RR data
+      const ECG_SAMPLE_RATE = 130; // Hz
+      const WINDOW_SIZE = 15;      // seconds for breathing analysis
+      const OVERLAP = 0.5;         // 50% overlap for breathing analysis windows
+      
+      // DOM Elements
+      const connectButton = document.getElementById('connectButton');
+      const disconnectButton = document.getElementById('disconnectButton');
+      const resetButton = document.getElementById('resetButton');
+      const statusText = document.getElementById('statusText');
+      const heartRateElement = document.getElementById('heartRate');
+      const breathingRateElement = document.getElementById('breathingRate');
+      const rrIntervalElement = document.getElementById('rrInterval');
+      const dataPointsElement = document.getElementById('dataPoints');
+      
+      // Initialize charts
+      initializeCharts();
+      
+      // Event Listeners
+      connectButton.addEventListener('click', connect);
+      disconnectButton.addEventListener('click', disconnect);
+      resetButton.addEventListener('click', resetData);
+      
+      // Functions
+      function initializeCharts() {
+        console.log('Initializing charts...');
+        try {
+          // ECG Chart
+          const ecgCtx = document.getElementById('ecgChart').getContext('2d');
+          ecgChart = new Chart(ecgCtx, {
+            type: 'line',
+            data: {
+              labels: [],
+              datasets: [{
+                label: 'ECG (µV)',
+                data: [],
+                borderColor: 'blue',
+                fill: false,
+                tension: 0.1,
+                pointRadius: 0
+              }]
+            },
+            options: {
+              scales: {
+                x: {
+                  title: { display: true, text: 'Time (s)' },
+                  type: 'linear',
+                  min: 0,
+                  max: 10
+                },
+                y: {
+                  title: { display: true, text: 'Voltage (µV)' },
+                  min: -1500,
+                  max: 1500
+                }
+              },
+              animation: false,
+              maintainAspectRatio: false,
+              responsive: true
+            }
+          });
+          
+          // RR Interval Chart
+          const rrCtx = document.getElementById('rrChart').getContext('2d');
+          rrChart = new Chart(rrCtx, {
+            type: 'line',
+            data: {
+              labels: [],
+              datasets: [{
+                label: 'RR Interval (ms)',
+                data: [],
+                borderColor: 'green',
+                fill: false,
+                tension: 0.2,
+                pointRadius: 2
+              }]
+            },
+            options: {
+              scales: {
+                x: {
+                  title: { display: true, text: 'Time (s)' },
+                  type: 'linear',
+                  min: 0,
+                  max: 60
+                },
+                y: {
+                  title: { display: true, text: 'RR Interval (ms)' },
+                  min: 400,
+                  max: 1200
+                }
+              },
+              animation: false,
+              maintainAspectRatio: false,
+              responsive: true
+            }
+          });
+          
+          // Breathing Rate Chart
+          const breathingCtx = document.getElementById('breathingChart').getContext('2d');
+          breathingChart = new Chart(breathingCtx, {
+            type: 'line',
+            data: {
+              labels: [],
+              datasets: [{
+                label: 'Breathing Rate (br/min)',
+                data: [],
+                borderColor: 'purple',
+                backgroundColor: 'rgba(128, 0, 128, 0.1)',
+                fill: true,
+                tension: 0.3,
+                pointRadius: 2
+              }]
+            },
+            options: {
+              scales: {
+                x: {
+                  title: { display: true, text: 'Time (s)' },
+                  type: 'linear',
+                  min: 0,
+                  max: 300
+                },
+                y: {
+                  title: { display: true, text: 'Breathing Rate (breaths/min)' },
+                  min: 5,
+                  max: 30
+                }
+              },
+              animation: false,
+              maintainAspectRatio: false,
+              responsive: true
+            }
+          });
+          
+          // Power Spectrum Chart
+          const spectrumCtx = document.getElementById('spectrumChart').getContext('2d');
+          spectrumChart = new Chart(spectrumCtx, {
+            type: 'line',
+            data: {
+              labels: [],
+              datasets: [{
+                label: 'Power Spectrum',
+                data: [],
+                borderColor: 'orange',
+                backgroundColor: 'rgba(255, 165, 0, 0.1)',
+                fill: true,
+                tension: 0.1,
+                pointRadius: 0
+              }]
+            },
+            options: {
+              scales: {
+                x: {
+                  title: { display: true, text: 'Frequency (Hz)' },
+                  type: 'linear',
+                  min: 0,
+                  max: 0.5
+                },
+                y: {
+                  title: { display: true, text: 'Power' },
+                  type: 'linear',
+                  beginAtZero: true
+                }
+              },
+              animation: false,
+              maintainAspectRatio: false,
+              responsive: true
+            }
+          });
+          
+          console.log('Charts initialized successfully');
+        } catch (error) {
+          console.error('Error initializing charts:', error);
+          updateStatus('Error initializing charts: ' + error.message);
+        }
+      }
+      
+      async function connect() {
+        console.log('Connect button clicked');
+        try {
+          updateStatus('Requesting device...');
+          
+          // Request device with both Heart Rate Service and PMD Service
+          device = await navigator.bluetooth.requestDevice({
+            filters: [{ namePrefix: DEVICE_NAME_PREFIX }],
+            optionalServices: [HEART_RATE_SERVICE_UUID, PMD_SERVICE_UUID]
+          });
+          
+          console.log('Device selected:', device.name);
+          updateStatus(`Found device: ${device.name}`);
+          
+          // Connect to GATT server
+          server = await device.gatt.connect();
+          console.log('Connected to GATT server');
+          updateStatus('Connected to device');
+          
+          // Set up heart rate notifications
+          await setupHeartRateNotifications();
+          
+          // Set up ECG streaming
+          await setupECGStreaming();
+          
+          // Update UI
+          connectButton.disabled = true;
+          disconnectButton.disabled = false;
+          resetButton.disabled = false;
+          updateStatus('Streaming data from Polar H10');
+          
+          // Handle disconnection
+          device.addEventListener('gattserverdisconnected', onDisconnected);
+        } catch (error) {
+          console.error('Connection error:', error);
+          
+          let errorMessage = 'Connection error: ' + error.message;
+          
+          // Provide more helpful messages for common errors
+          if (error.message.includes('User cancelled')) {
+            errorMessage = 'Device selection was cancelled by the user.';
+          } else if (error.message.includes('GATT operation already in progress')) {
+            errorMessage = 'A Bluetooth operation is already in progress. Please wait a moment and try again.';
+          } else if (error.message.includes('Bluetooth adapter not available')) {
+            errorMessage = 'Bluetooth is not available on your device or is turned off.';
+          }
+          
+          updateStatus(errorMessage);
+        }
+      }
+      
+      async function setupHeartRateNotifications() {
+        try {
+          console.log('Setting up heart rate notifications...');
+          
+          // Access the Heart Rate Service
+          const service = await server.getPrimaryService(HEART_RATE_SERVICE_UUID);
+          console.log('Heart rate service found');
+          
+          // Get the Heart Rate Measurement characteristic
+          hrCharacteristic = await service.getCharacteristic(HEART_RATE_CHARACTERISTIC_UUID);
+          console.log('Heart rate characteristic found');
+          
+          // Start notifications
+          await hrCharacteristic.startNotifications();
+          console.log('Heart rate notifications started');
+          
+          // Listen for heart rate notifications
+          hrCharacteristic.addEventListener('characteristicvaluechanged', handleHeartRateData);
+          
+          updateStatus('Heart rate monitoring started');
+        } catch (error) {
+          console.error('Heart rate setup error:', error);
+          updateStatus(`Heart rate setup error: ${error.message}`);
+          throw error;
+        }
+      }
+      
+      async function setupECGStreaming() {
+        try {
+          console.log('Setting up ECG streaming...');
+          
+          // Access PMD Service
+          const service = await server.getPrimaryService(PMD_SERVICE_UUID);
+          console.log('PMD service found');
+          
+          // Get Control and Data characteristics
+          const controlChar = await service.getCharacteristic(PMD_CONTROL_UUID);
+          dataCharacteristic = await service.getCharacteristic(PMD_DATA_UUID);
+          console.log('PMD characteristics found');
+          
+          // Send ECG stream command
+          const ecgCommand = new Uint8Array([0x02, 0x00, 0x00, 0x01, 0x82, 0x00, 0x01, 0x01, 0x0E, 0x00]);
+          await controlChar.writeValue(ecgCommand);
+          console.log('ECG command sent');
+          
+          // Read response
+          const response = await controlChar.readValue();
+          console.log('ECG setup response:', new Uint8Array(response.buffer));
+          
+          // Start streaming
+          const startCommand = new Uint8Array([0x01, 0x00]);
+          await controlChar.writeValue(startCommand);
+          console.log('Start command sent');
+          
+          // Start notifications
+          await dataCharacteristic.startNotifications();
+          console.log('ECG notifications started');
+          
+          // Add event listener for data
+          dataCharacteristic.addEventListener('characteristicvaluechanged', handleECGData);
+          
+          updateStatus('ECG streaming started');
+        } catch (error) {
+          console.error('ECG setup error:', error);
+          updateStatus(`ECG setup error: ${error.message}`);
+          throw error;
+        }
+      }
+      
+      function handleHeartRateData(event) {
+        const dataView = event.target.value;
+        
+        // First byte is flags
+        const flags = dataView.getUint8(0);
+        const isRRIntervalPresent = (flags & 0x10) === 0x10;
+        
+        // Check if heart rate value format is uint8 or uint16
+        const isHeartRateValueUint16 = (flags & 0x01) === 0x01;
+        
+        // Get heart rate value
+        let heartRate;
+        let offset = 1; // Start at second byte
+        
+        if (isHeartRateValueUint16) {
+          heartRate = dataView.getUint16(offset, true);
+          offset += 2;
+        } else {
+          heartRate = dataView.getUint8(offset);
+          offset += 1;
+        }
+        
+        // Update heart rate display
+        heartRateElement.textContent = heartRate;
+        
+        // Get RR intervals if present
+        if (isRRIntervalPresent) {
+          // Initialize time if not already done
+          if (startTime === null) {
+            startTime = performance.now();
+          }
+          
+          // Number of RR intervals
+          const numRRIntervals = Math.floor((dataView.byteLength - offset) / 2);
+          
+          for (let i = 0; i < numRRIntervals; i++) {
+            // RR intervals are in 1/1024 seconds format, convert to milliseconds
+            const rrRaw = dataView.getUint16(offset, true);
+            const rrInterval = (rrRaw / 1024) * 1000;
+            offset += 2;
+            
+            // Skip invalid RR intervals (can happen during connectivity issues)
+            if (rrInterval < 200 || rrInterval > 2000) {
+              console.warn('Skipping invalid RR interval:', rrInterval);
+              continue;
+            }
+            
+            // Current time in seconds since start
+            const currentTime = (performance.now() - startTime) / 1000;
+            
+            // Add RR interval to the arrays
+            rrIntervals.push(rrInterval);
+            rrTimes.push(currentTime);
+            
+            // Update last RR time
+            lastRrTime = currentTime;
+            
+            // Update RR interval display
+            rrIntervalElement.textContent = rrInterval.toFixed(0);
+            
+            // Limit array size
+            if (rrIntervals.length > MAX_RR_POINTS) {
+              rrIntervals.shift();
+              rrTimes.shift();
+            }
+            
+            // Update data points counter
+            dataPointsElement.textContent = rrIntervals.length;
+            
+            // Update RR Chart
+            updateRRChart();
+            
+            // Analyze breathing if we have enough data
+            if (rrIntervals.length >= 15) {
+              analyzeBreathing();
+            }
+          }
+        }
+      }
+      
+      function handleECGData(event) {
+        const dataView = event.target.value;
+        
+        // Check if data is valid
+        if (dataView.byteLength < 10) {
+          console.warn('Invalid ECG frame, too short');
+          return;
+        }
+        
+        // Initialize time if not already done
+        if (startTime === null) {
+          startTime = performance.now();
+        }
+        
+        const timestamp = performance.now();
+        let offset = 10; // Skip header
+        const samples = [];
+        
+        // Parse 24-bit ECG samples
+        while (offset + 3 <= dataView.byteLength) {
+          // Extract 3 bytes (little-endian)
+          const byte1 = dataView.getUint8(offset);
+          const byte2 = dataView.getUint8(offset + 1);
+          const byte3 = dataView.getUint8(offset + 2);
+          
+          // Combine to create 24-bit sample
+          let sample = (byte3 << 16) | (byte2 << 8) | byte1;
+          
+          // Convert to signed (two's complement)
+          if (sample & 0x800000) {
+            sample = sample - 0x1000000;
+          }
+          
+          // Filter extreme values
+          if (Math.abs(sample) <= 5000) {
+            samples.push(sample);
+          }
+          
+          offset += 3;
+        }
+        
+        // Skip if no valid samples
+        if (samples.length === 0) {
+          return;
+        }
+        
+        // Update ECG data points
+        samples.forEach((sample, index) => {
+          const time = (timestamp - startTime) / 1000 + (index / ECG_SAMPLE_RATE);
+          ecgDataPoints.push({ time, sample });
+          
+          if (ecgDataPoints.length > MAX_ECG_POINTS) {
+            ecgDataPoints.shift();
+          }
+        });
+        
+        // Update ECG chart
+        updateECGChart();
+      }
+      
+      function updateECGChart() {
+        if (!ecgChart) return;
+        
+        ecgChart.data.labels = ecgDataPoints.map(p => p.time);
+        ecgChart.data.datasets[0].data = ecgDataPoints.map(p => p.sample);
+        
+        // Auto-scroll x-axis
+        if (ecgDataPoints.length > 0) {
+          const latestTime = ecgDataPoints[ecgDataPoints.length - 1].time;
+          ecgChart.options.scales.x.min = Math.max(0, latestTime - 10);
+          ecgChart.options.scales.x.max = latestTime;
+        }
+        
+        ecgChart.update();
+      }
+      
+      function updateRRChart() {
+        if (!rrChart) return;
+        
+        rrChart.data.labels = rrTimes;
+        rrChart.data.datasets[0].data = rrIntervals;
+        
+        // Auto-scroll x-axis if more than 60 seconds of data
+        if (rrTimes.length > 0 && rrTimes[rrTimes.length - 1] > 60) {
+          const latestTime = rrTimes[rrTimes.length - 1];
+          rrChart.options.scales.x.min = Math.max(0, latestTime - 60);
+          rrChart.options.scales.x.max = latestTime;
+        }
+        
+        // Auto-adjust y-axis
+        if (rrIntervals.length > 0) {
+          const minRR = Math.min(...rrIntervals);
+          const maxRR = Math.max(...rrIntervals);
+          const padding = (maxRR - minRR) * 0.2;
+          
+          rrChart.options.scales.y.min = Math.max(400, Math.floor((minRR - padding) / 50) * 50);
+          rrChart.options.scales.y.max = Math.min(1200, Math.ceil((maxRR + padding) / 50) * 50);
+        }
+        
+        rrChart.update();
+      }
+      
+      function updateBreathingChart() {
+        if (!breathingChart) return;
+        
+        breathingChart.data.labels = breathingTimes;
+        breathingChart.data.datasets[0].data = breathingRates;
+        
+        // Auto-scroll x-axis if more than 5 minutes of data
+        if (breathingTimes.length > 0 && breathingTimes[breathingTimes.length - 1] > 300) {
+          const latestTime = breathingTimes[breathingTimes.length - 1];
+          breathingChart.options.scales.x.min = Math.max(0, latestTime - 300);
+          breathingChart.options.scales.x.max = latestTime;
+        }
+        
+        // Auto-adjust y-axis
+        if (breathingRates.length > 0) {
+          const minRate = Math.min(...breathingRates);
+          const maxRate = Math.max(...breathingRates);
+          const padding = (maxRate - minRate) * 0.2;
+          
+          breathingChart.options.scales.y.min = Math.max(5, Math.floor((minRate - padding) / 5) * 5);
+          breathingChart.options.scales.y.max = Math.min(30, Math.ceil((maxRate + padding) / 5) * 5);
+        }
+        
+        breathingChart.update();
+      }
+      
+      function analyzeBreathing() {
+        // Check if we have enough data
+        if (rrIntervals.length < 15) return;
+        
+        // Get current window of RR intervals
+        const segmentLength = Math.min(WINDOW_SIZE, (lastRrTime - rrTimes[0]));
+        
+        // If window is too small, wait for more data
+        if (segmentLength < 15) return;
+        
+        // Find the index range for the current window
+        const startIndex = Math.max(0, 
+          rrTimes.findIndex(t => t >= lastRrTime - segmentLength));
+        
+        if (startIndex < 0) return;
+        
+        const segmentRR = rrIntervals.slice(startIndex);
+        const segmentTime = lastRrTime;
+        
+        // Calculate breathing rate
+        const breathingRate = estimateBreathingRate(segmentRR);
+        
+        if (breathingRate !== null) {
+          // Add to breathing rate arrays
+          breathingRates.push(breathingRate);
+          breathingTimes.push(segmentTime);
+          
+          // Limit array size (keep last 100 points)
+          if (breathingRates.length > 100) {
+            breathingRates.shift();
+            breathingTimes.shift();
+          }
+          
+          // Update breathing rate display
+          breathingRateElement.textContent = breathingRate.toFixed(1);
+          
+          // Update breathing chart
+          updateBreathingChart();
+        }
+      }
+      
+      function estimateBreathingRate(rrIntervals, samplingRate = 4.0, minRespFreq = 0.1, maxRespFreq = 0.5) {
+        try {
+          // Convert RR intervals to seconds if they're in milliseconds
+          const mean = rrIntervals.reduce((sum, val) => sum + val, 0) / rrIntervals.length;
+          if (mean > 100) {
+            rrIntervals = rrIntervals.map(rr => rr / 1000.0);
+          }
+          
+          // Create time series from RR intervals
+          let timePoints = [0];
+          let cumSum = 0;
+          
+          for (let i = 0; i < rrIntervals.length; i++) {
+            cumSum += rrIntervals[i];
+            timePoints.push(cumSum);
+          }
+          
+          // Duplicate first RR interval
+          let intervals = [rrIntervals[0], ...rrIntervals];
+          
+          // Resample the signal to get evenly spaced time points
+          const totalTime = timePoints[timePoints.length - 1];
+          const tRegular = numeric.linspace(0, totalTime, Math.ceil(totalTime * samplingRate));
+          
+          // Interpolate RR intervals
+          const rrInterpolated = interpolate(timePoints, intervals, tRegular);
+          
+          // Detrend the signal
+          const rrDetrended = detrend(rrInterpolated);
+          
+          // Apply bandpass filter to isolate respiratory frequencies
+          const fs = samplingRate;
+          const nyquist = fs / 2;
+          const low = minRespFreq / nyquist;
+          const high = maxRespFreq / nyquist;
+          const rrFiltered = bandpassFilter(rrDetrended, low, high);
+          
+          // Calculate power spectral density
+          const { freqs, psd } = powerSpectralDensity(rrFiltered, fs);
+          
+          // Find frequency with maximum power in the respiratory band
+          const respBandIndices = freqs.map((f, i) => {
+            if (f >= minRespFreq && f <= maxRespFreq) {
+              return i;
+            }
+            return -1;
+          }).filter(idx => idx !== -1);
+          
+          if (respBandIndices.length === 0) {
+            return null;
+          }
+          
+          const respFreqs = respBandIndices.map(i => freqs[i]);
+          const respPsd = respBandIndices.map(i => psd[i]);
+          
+          // Find max PSD index
+          let maxPsdIdx = 0;
+          let maxPsd = respPsd[0];
+          
+          for (let i = 1; i < respPsd.length; i++) {
+            if (respPsd[i] > maxPsd) {
+              maxPsd = respPsd[i];
+              maxPsdIdx = i;
+            }
+          }
+          
+          const breathingFreq = respFreqs[maxPsdIdx];
+          const breathingRate = breathingFreq * 60; // Convert to breaths per minute
+          
+          // Update spectrum chart
+          updateSpectrumChart(freqs, psd, breathingFreq);
+          
+          return breathingRate;
+        } catch (error) {
+          console.error('Error estimating breathing rate:', error);
+          return null;
+        }
+      }
+      
+      function updateSpectrumChart(freqs, psd, breathingFreq) {
+        if (!spectrumChart) return;
+        
+        // Filter frequencies to 0-0.5 Hz range
+        const filteredIndices = freqs.map((f, i) => f <= 0.5 ? i : -1).filter(i => i !== -1);
+        const filteredFreqs = filteredIndices.map(i => freqs[i]);
+        const filteredPsd = filteredIndices.map(i => psd[i]);
+        
+        // Update chart data
+        spectrumChart.data.labels = filteredFreqs;
+        spectrumChart.data.datasets[0].data = filteredPsd;
+        
+        // Add vertical line for breathing frequency
+        const respiratoryBand = {
+          type: 'box',
+          xMin: 0.1,
+          xMax: 0.5,
+          backgroundColor: 'rgba(0, 255, 0, 0.1)',
+          borderColor: 'transparent'
+        };
+        
+        const breathingLine = {
+          type: 'line',
+          xMin: breathingFreq,
+          xMax: breathingFreq,
+          borderColor: 'red',
+          borderWidth: 2
+        };
+        
+        spectrumChart.options.plugins = {
+          annotation: {
+            annotations: {
+              respiratoryBand,
+              breathingLine
+            }
+          }
+        };
+        
+        spectrumChart.update();
+      }
+      
+      function disconnect() {
+        console.log('Disconnect button clicked');
+        
+        if (!device) {
+          updateStatus('No device connected');
+          return;
+        }
+        
+        try {
+          // Stop notifications
+          if (hrCharacteristic) {
+            hrCharacteristic.stopNotifications()
+              .then(() => {
+                hrCharacteristic.removeEventListener('characteristicvaluechanged', handleHeartRateData);
+                console.log('Heart rate notifications stopped');
+              })
+              .catch(error => console.error('Error stopping heart rate notifications:', error));
+          }
+          
+          if (dataCharacteristic) {
+            dataCharacteristic.stopNotifications()
+              .then(() => {
+                dataCharacteristic.removeEventListener('characteristicvaluechanged', handleECGData);
+                console.log('ECG notifications stopped');
+              })
+              .catch(error => console.error('Error stopping ECG notifications:', error));
+          }
+          
+          // Disconnect from device
+          if (device.gatt.connected) {
+            device.gatt.disconnect();
+            console.log('Disconnected from device');
+          }
+          
+          // Update UI
+          connectButton.disabled = false;
+          disconnectButton.disabled = true;
+          updateStatus('Disconnected from device');
+        } catch (error) {
+          console.error('Disconnect error:', error);
+          updateStatus(`Disconnect error: ${error.message}`);
+        }
+      }
+      
+      function onDisconnected() {
+        console.log('Device disconnected event');
+        
+        // Update UI
+        connectButton.disabled = false;
+        disconnectButton.disabled = true;
+        resetButton.disabled = false;
+        updateStatus('Device disconnected');
+        
+        // Reset device references but keep data
+        device = null;
+        server = null;
+        hrCharacteristic = null;
+        dataCharacteristic = null;
+      }
+      
+      function resetData() {
+        console.log('Reset button clicked');
+        
+        // Reset data arrays
+        ecgDataPoints = [];
+        rrIntervals = [];
+        rrTimes = [];
+        breathingRates = [];
+        breathingTimes = [];
+        startTime = null;
+        lastRrTime = 0;
+        
+        // Reset charts
+        ecgChart.data.labels = [];
+        ecgChart.data.datasets[0].data = [];
+        ecgChart.update();
+        
+        rrChart.data.labels = [];
+        rrChart.data.datasets[0].data = [];
+        rrChart.update();
+        
+        breathingChart.data.labels = [];
+        breathingChart.data.datasets[0].data = [];
+        breathingChart.update();
+        
+        spectrumChart.data.labels = [];
+        spectrumChart.data.datasets[0].data = [];
+        spectrumChart.update();
+        
+        // Reset stats
+        heartRateElement.textContent = '--';
+        breathingRateElement.textContent = '--';
+        rrIntervalElement.textContent = '--';
+        dataPointsElement.textContent = '0';
+        
+        updateStatus('Data reset complete');
+      }
+      
+      function updateStatus(message) {
+        statusText.textContent = message;
+        console.log('Status update:', message);
+      }
+      
+      // Signal processing utility functions
+      
+      // Linear interpolation for unevenly sampled data
+      function interpolate(x, y, newX) {
+        const result = new Array(newX.length);
+        
+        for (let i = 0; i < newX.length; i++) {
+          const targetX = newX[i];
+          
+          // Find the closest points
+          let j = 0;
+          while (j < x.length && x[j] < targetX) {
+            j++;
+          }
+          
+          if (j === 0) {
+            // Extrapolate before the first point
+            result[i] = y[0];
+          } else if (j === x.length) {
+            // Extrapolate after the last point
+            result[i] = y[y.length - 1];
+          } else {
+            // Interpolate between points
+            const x0 = x[j - 1];
+            const x1 = x[j];
+            const y0 = y[j - 1];
+            const y1 = y[j];
+            
+            // Linear interpolation formula: y = y0 + (x - x0) * (y1 - y0) / (x1 - x0)
+            result[i] = y0 + (targetX - x0) * (y1 - y0) / (x1 - x0);
+          }
+        }
+        
+        return result;
+      }
+      
+      // Detrend signal by removing linear trend
+      function detrend(signal) {
+        const n = signal.length;
+        
+        if (n <= 1) return signal.slice();
+        
+        // Create x values (indices)
+        const x = Array.from({length: n}, (_, i) => i);
+        
+        // Calculate means
+        let sumX = 0;
+        let sumY = 0;
+        let sumXY = 0;
+        let sumXX = 0;
+        
+        for (let i = 0; i < n; i++) {
+          sumX += x[i];
+          sumY += signal[i];
+          sumXY += x[i] * signal[i];
+          sumXX += x[i] * x[i];
+        }
+        
+        // Calculate slope and intercept
+        const meanX = sumX / n;
+        const meanY = sumY / n;
+        const slope = (sumXY - meanX * sumY) / (sumXX - meanX * sumX);
+        const intercept = meanY - slope * meanX;
+        
+        // Remove trend
+        const detrended = new Array(n);
+        for (let i = 0; i < n; i++) {
+          const trend = intercept + slope * i;
+          detrended[i] = signal[i] - trend;
+        }
+        
+        return detrended;
+      }
+      
+      // Simple bandpass filter implementation
+      function bandpassFilter(signal, lowCutoff, highCutoff) {
+        // For a simple implementation, we'll use a combination of moving averages
+        const n = signal.length;
+        const result = new Array(n).fill(0);
+        
+        // Determine window sizes based on cutoff frequencies
+        // Lower cutoff -> larger window for high-pass filter
+        // Higher cutoff -> smaller window for low-pass filter
+        const lpWindowSize = Math.max(3, Math.min(n - 1, Math.round(1 / highCutoff)));
+        const hpWindowSize = Math.max(lpWindowSize + 2, Math.min(n - 1, Math.round(1 / lowCutoff)));
+        
+        // Low-pass filter: Moving average with smaller window
+        const lowpass = new Array(n);
+        for (let i = 0; i < n; i++) {
+          let sum = 0;
+          let count = 0;
+          
+          const halfWindow = Math.floor(lpWindowSize / 2);
+          for (let j = Math.max(0, i - halfWindow); j <= Math.min(n - 1, i + halfWindow); j++) {
+            sum += signal[j];
+            count++;
+          }
+          
+          lowpass[i] = sum / count;
+        }
+        
+        // High-pass filter: signal - moving average with larger window
+        const highpass = new Array(n);
+        for (let i = 0; i < n; i++) {
+          let sum = 0;
+          let count = 0;
+          
+          const halfWindow = Math.floor(hpWindowSize / 2);
+          for (let j = Math.max(0, i - halfWindow); j <= Math.min(n - 1, i + halfWindow); j++) {
+            sum += signal[j];
+            count++;
+          }
+          
+          // High-pass = signal - low-pass
+          highpass[i] = signal[i] - (sum / count);
+        }
+        
+        // Combine filters: Apply low-pass to high-pass
+        for (let i = 0; i < n; i++) {
+          let sum = 0;
+          let count = 0;
+          
+          const halfWindow = Math.floor(lpWindowSize / 2);
+          for (let j = Math.max(0, i - halfWindow); j <= Math.min(n - 1, i + halfWindow); j++) {
+            sum += highpass[j];
+            count++;
+          }
+          
+          result[i] = sum / count;
+        }
+        
+        return result;
+      }
+      
+      // Power spectral density calculation
+      function powerSpectralDensity(signal, fs) {
+        const n = signal.length;
+        
+        // Apply window function (Hamming)
+        const windowed = new Array(n);
+        for (let i = 0; i < n; i++) {
+          const windowValue = 0.54 - 0.46 * Math.cos(2 * Math.PI * i / (n - 1));
+          windowed[i] = signal[i] * windowValue;
+        }
+        
+        // Calculate FFT
+        // For this implementation, we'll use a simple DFT calculation
+        const freqStep = fs / n;
+        const numFreqs = Math.floor(n / 2) + 1;
+        const freqs = new Array(numFreqs);
+        const psd = new Array(numFreqs);
+        
+        for (let k = 0; k < numFreqs; k++) {
+          freqs[k] = k * freqStep;
+          
+          let realSum = 0;
+          let imagSum = 0;
+          
+          for (let t = 0; t < n; t++) {
+            const angle = -2 * Math.PI * k * t / n;
+            realSum += windowed[t] * Math.cos(angle);
+            imagSum += windowed[t] * Math.sin(angle);
+          }
+          
+          // Power = amplitude squared
+          psd[k] = (realSum * realSum + imagSum * imagSum) / (fs * n);
+        }
+        
+        return { freqs, psd };
+      }
+    });
+  </script>
+</body>
+</html>
