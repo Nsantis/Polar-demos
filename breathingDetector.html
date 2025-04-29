@@ -104,6 +104,27 @@
       border-radius: 5px;
       display: none;
     }
+    .settings-container {
+      display: flex;
+      justify-content: center;
+      gap: 20px;
+      margin: 10px 0;
+      padding: 5px;
+      background-color: #f0f0f0;
+      border-radius: 5px;
+    }
+    .setting-item {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+      padding: 5px;
+    }
+    .tooltip {
+      font-size: 0.8em;
+      color: #666;
+      font-style: italic;
+    }
   </style>
 </head>
 <body>
@@ -121,6 +142,7 @@
       <button id="connectButton">Connect to Polar H10</button>
       <button id="disconnectButton" disabled>Disconnect</button>
       <button id="resetButton" disabled>Reset Data</button>
+      <button id="saveButton" disabled>Save Data</button>
     </div>
     
     <div class="stats-container">
@@ -144,6 +166,13 @@
         <div id="dataPoints" class="stat-value">0</div>
         <div class="stat-label">count</div>
       </div>
+    </div>
+    <div class="settings-container">
+      <label class="setting-item">
+        <input type="checkbox" id="hrBasedTuningCheckbox" checked>
+        <span>HR-based filter tuning</span>
+        <span class="tooltip">Adjusts breathing detection based on heart rate</span>
+      </label>
     </div>
     
     <div class="charts-container">
@@ -208,17 +237,29 @@
       const ECG_SAMPLE_RATE = 130; // Hz
       const WINDOW_SIZE = 15;      // seconds for breathing analysis
       const OVERLAP = 0.5;         // 50% overlap for breathing analysis windows
-      
+
+            // Add to global variables
+      let currentHeartRate = 60; // Default starting value
+      let restingHeartRate = 60; // Default resting heart rate
+      let hrBasedTuningEnabled = true; // Enable/disable HR-based tuning
       // DOM Elements
       const connectButton = document.getElementById('connectButton');
       const disconnectButton = document.getElementById('disconnectButton');
       const resetButton = document.getElementById('resetButton');
+      const saveButton = document.getElementById('saveButton');
       const statusText = document.getElementById('statusText');
       const heartRateElement = document.getElementById('heartRate');
       const breathingRateElement = document.getElementById('breathingRate');
       const rrIntervalElement = document.getElementById('rrInterval');
       const dataPointsElement = document.getElementById('dataPoints');
-      
+      // Add to the DOM Elements section
+      const hrBasedTuningCheckbox = document.getElementById('hrBasedTuningCheckbox');
+
+      // Add to the Event Listeners section
+      hrBasedTuningCheckbox.addEventListener('change', function() {
+        hrBasedTuningEnabled = this.checked;
+        updateStatus(`HR-based filter tuning ${this.checked ? 'enabled' : 'disabled'}`);
+      });
       // Initialize charts
       initializeCharts();
       
@@ -226,6 +267,7 @@
       connectButton.addEventListener('click', connect);
       disconnectButton.addEventListener('click', disconnect);
       resetButton.addEventListener('click', resetData);
+      saveButton.addEventListener('click', saveData);
       
       // Functions
       function initializeCharts() {
@@ -409,6 +451,7 @@
           connectButton.disabled = true;
           disconnectButton.disabled = false;
           resetButton.disabled = false;
+          saveButton.disabled = false;
           updateStatus('Streaming data from Polar H10');
           
           // Handle disconnection
@@ -742,8 +785,9 @@
         const segmentTime = lastRrTime;
         
         // Calculate breathing rate
-        const breathingRate = estimateBreathingRate(segmentRR);
-        
+        //const breathingRate = estimateBreathingRate(segmentRR);
+        // Calculate breathing rate with HR-based adjustments
+        const breathingRate = estimateBreathingRate(segmentRR, undefined, undefined, undefined, currentHeartRate);
         if (breathingRate !== null) {
           // Add to breathing rate arrays
           breathingRates.push(breathingRate);
@@ -764,123 +808,200 @@
       }
       
       function estimateBreathingRate(rrIntervals, samplingRate = 4.0, minRespFreq = 0.1, maxRespFreq = 0.5) {
-        try {
-          // Convert RR intervals to seconds if they're in milliseconds
-          const mean = rrIntervals.reduce((sum, val) => sum + val, 0) / rrIntervals.length;
-          if (mean > 100) {
-            rrIntervals = rrIntervals.map(rr => rr / 1000.0);
-          }
-          
-          // Create time series from RR intervals
-          let timePoints = [0];
-          let cumSum = 0;
-          
-          for (let i = 0; i < rrIntervals.length; i++) {
-            cumSum += rrIntervals[i];
-            timePoints.push(cumSum);
-          }
-          
-          // Duplicate first RR interval
-          let intervals = [rrIntervals[0], ...rrIntervals];
-          
-          // Resample the signal to get evenly spaced time points
-          const totalTime = timePoints[timePoints.length - 1];
-          const tRegular = numeric.linspace(0, totalTime, Math.ceil(totalTime * samplingRate));
-          
-          // Interpolate RR intervals
-          const rrInterpolated = interpolate(timePoints, intervals, tRegular);
-          
-          // Detrend the signal
-          const rrDetrended = detrend(rrInterpolated);
-          
-          // Apply bandpass filter to isolate respiratory frequencies
-          const fs = samplingRate;
-          const nyquist = fs / 2;
-          const low = minRespFreq / nyquist;
-          const high = maxRespFreq / nyquist;
-          const rrFiltered = bandpassFilter(rrDetrended, low, high);
-          
-          // Calculate power spectral density
-          const { freqs, psd } = powerSpectralDensity(rrFiltered, fs);
-          
-          // Find frequency with maximum power in the respiratory band
-          const respBandIndices = freqs.map((f, i) => {
-            if (f >= minRespFreq && f <= maxRespFreq) {
-              return i;
+          try {
+            // Apply HR-based filter tuning if enabled
+            if (hrBasedTuningEnabled) {
+              // Adjust minimum respiratory frequency based on heart rate
+              // Higher heart rates generally mean faster breathing
+              const hrDelta = heartRate - restingHeartRate;
+              
+              if (hrDelta > 40) {
+                // Significant elevation - adjust min frequency upward
+                // This helps prevent underestimation during exercise
+                minRespFreq = 0.2; // 12 breaths/min minimum
+                maxRespFreq = 0.75; // 45 breaths/min maximum
+              } else if (hrDelta > 25) {
+                // Moderate elevation
+                minRespFreq = 0.17; // ~10 breaths/min minimum
+                maxRespFreq = 0.67; // 40 breaths/min maximum
+              } else if (hrDelta > 15) {
+                // Slight elevation
+                minRespFreq = 0.15; // 9 breaths/min minimum
+                maxRespFreq = 0.6; // 36 breaths/min maximum
+              } else {
+                // Resting
+                minRespFreq = 0.1; // 6 breaths/min minimum
+                maxRespFreq = 0.5; // 30 breaths/min maximum
+              }
+              
+              console.log(`HR: ${heartRate}, HR Delta: ${hrDelta}, Filter: ${minRespFreq.toFixed(2)}-${maxRespFreq.toFixed(2)} Hz`);
             }
-            return -1;
-          }).filter(idx => idx !== -1);
-          
-          if (respBandIndices.length === 0) {
+            
+            // Convert RR intervals to seconds if they're in milliseconds
+            const mean = rrIntervals.reduce((sum, val) => sum + val, 0) / rrIntervals.length;
+            if (mean > 100) {
+              rrIntervals = rrIntervals.map(rr => rr / 1000.0);
+            }
+            
+            // Create time series from RR intervals
+            let timePoints = [0];
+            let cumSum = 0;
+            
+            for (let i = 0; i < rrIntervals.length; i++) {
+              cumSum += rrIntervals[i];
+              timePoints.push(cumSum);
+            }
+            
+            // Duplicate first RR interval
+            let intervals = [rrIntervals[0], ...rrIntervals];
+            
+            // Resample the signal to get evenly spaced time points
+            const totalTime = timePoints[timePoints.length - 1];
+            const tRegular = numeric.linspace(0, totalTime, Math.ceil(totalTime * samplingRate));
+            
+            // Interpolate RR intervals
+            const rrInterpolated = interpolate(timePoints, intervals, tRegular);
+            
+            // Detrend the signal
+            const rrDetrended = detrend(rrInterpolated);
+            
+            // Apply bandpass filter to isolate respiratory frequencies
+            const fs = samplingRate;
+            const nyquist = fs / 2;
+            const low = minRespFreq / nyquist;
+            const high = maxRespFreq / nyquist;
+            const rrFiltered = bandpassFilter(rrDetrended, low, high);
+            
+            // Calculate power spectral density
+            const { freqs, psd } = powerSpectralDensity(rrFiltered, fs);
+            
+            // Find frequency with maximum power in the respiratory band
+            const respBandIndices = freqs.map((f, i) => {
+              if (f >= minRespFreq && f <= maxRespFreq) {
+                return i;
+              }
+              return -1;
+            }).filter(idx => idx !== -1);
+            
+            if (respBandIndices.length === 0) {
+              return null;
+            }
+            
+            const respFreqs = respBandIndices.map(i => freqs[i]);
+            const respPsd = respBandIndices.map(i => psd[i]);
+            
+            // Find max PSD index
+            let maxPsdIdx = 0;
+            let maxPsd = respPsd[0];
+            
+            for (let i = 1; i < respPsd.length; i++) {
+              if (respPsd[i] > maxPsd) {
+                maxPsd = respPsd[i];
+                maxPsdIdx = i;
+              }
+            }
+            
+            const breathingFreq = respFreqs[maxPsdIdx];
+            const breathingRate = breathingFreq * 60; // Convert to breaths per minute
+            
+            // Update spectrum chart
+            updateSpectrumChart(freqs, psd, breathingFreq, minRespFreq, maxRespFreq);
+            
+            return breathingRate;
+          } catch (error) {
+            console.error('Error estimating breathing rate:', error);
             return null;
           }
-          
-          const respFreqs = respBandIndices.map(i => freqs[i]);
-          const respPsd = respBandIndices.map(i => psd[i]);
-          
-          // Find max PSD index
-          let maxPsdIdx = 0;
-          let maxPsd = respPsd[0];
-          
-          for (let i = 1; i < respPsd.length; i++) {
-            if (respPsd[i] > maxPsd) {
-              maxPsd = respPsd[i];
-              maxPsdIdx = i;
+        }
+      
+      function updateSpectrumChart(freqs, psd, breathingFreq, minRespFreq = 0.1, maxRespFreq = 0.5) {
+        try {  
+          // Check if the chart exists
+          if (!spectrumChart) return;
+              
+          // Filter frequencies to match our display range (expanded to 0.8 Hz to accommodate higher breathing rates)
+          const maxDisplayFreq = 0.8; // Show up to 48 breaths/min on the chart
+          const filteredIndices = freqs.map((f, i) => f <= maxDisplayFreq ? i : -1).filter(i => i !== -1);
+          const filteredFreqs = filteredIndices.map(i => freqs[i]);
+          const filteredPsd = filteredIndices.map(i => psd[i]);
+              
+          // Update chart data
+          spectrumChart.data.labels = filteredFreqs;
+          spectrumChart.data.datasets[0].data = filteredPsd;
+              
+          // Update x-axis to properly show our range of interest
+          spectrumChart.options.scales.x.min = 0;
+          spectrumChart.options.scales.x.max = maxDisplayFreq;
+              
+          // Since we don't have the annotation plugin properly loaded,
+          // we'll draw the respiratory band and breathing frequency directly on the chart
+              
+          // Clear any existing respiratory band dataset
+          const respBandDatasetIndex = spectrumChart.data.datasets.findIndex(d => d.label === 'Respiratory Band');
+          if (respBandDatasetIndex !== -1) {
+            spectrumChart.data.datasets.splice(respBandDatasetIndex, 1);
+          }
+              
+          // Clear any existing breathing line dataset
+          const breathingLineDatasetIndex = spectrumChart.data.datasets.findIndex(d => d.label === 'Breathing Frequency');
+          if (breathingLineDatasetIndex !== -1) {
+            spectrumChart.data.datasets.splice(breathingLineDatasetIndex, 1);
+          }
+              
+          // Add respiratory band as a background dataset
+          const respBandData = [];
+          for (let i = 0; i < filteredFreqs.length; i++) {
+            const freq = filteredFreqs[i];
+            if (freq >= minRespFreq && freq <= maxRespFreq) {
+              respBandData.push(filteredPsd[i]);
+            } else {
+              respBandData.push(0); // Zero outside the band
             }
           }
-          
-          const breathingFreq = respFreqs[maxPsdIdx];
-          const breathingRate = breathingFreq * 60; // Convert to breaths per minute
-          
-          // Update spectrum chart
-          updateSpectrumChart(freqs, psd, breathingFreq);
-          
-          return breathingRate;
+              
+          spectrumChart.data.datasets.push({
+            label: 'Respiratory Band',
+            data: respBandData,
+            backgroundColor: 'rgba(0, 255, 0, 0.2)',
+            borderColor: 'transparent',
+            pointRadius: 0,
+            fill: true
+          });
+              
+          // Add breathing frequency line as a separate dataset
+          // We'll create a vertical line at the breathing frequency by making two points with max height
+          const breathingLineData = filteredFreqs.map(f => 
+            Math.abs(f - breathingFreq) < 0.01 ? Math.max(...filteredPsd) * 1.1 : null
+          );
+              
+          spectrumChart.data.datasets.push({
+            label: 'Breathing Frequency',
+            data: breathingLineData,
+            backgroundColor: 'transparent',
+            borderColor: 'red',
+            borderWidth: 2,
+            pointRadius: 0
+          });
+              
+          // Add text annotation to display the current filter range
+          const titleText = `Spectrum (${(minRespFreq * 60).toFixed(1)}-${(maxRespFreq * 60).toFixed(1)} breaths/min)`;
+          spectrumChart.options.plugins.title = {
+            display: true,
+            text: titleText,
+            font: {
+              size: 14
+            }
+          };
+              
+          // Update the chart
+          spectrumChart.update();
+              
+          // Log the filter range for debugging
+          console.log(`Spectrum filter range: ${(minRespFreq * 60).toFixed(1)}-${(maxRespFreq * 60).toFixed(1)} breaths/min`);
         } catch (error) {
-          console.error('Error estimating breathing rate:', error);
+          console.error('Error in breathing rate analysis:', error);
           return null;
         }
-      }
-      
-      function updateSpectrumChart(freqs, psd, breathingFreq) {
-        if (!spectrumChart) return;
-        
-        // Filter frequencies to 0-0.5 Hz range
-        const filteredIndices = freqs.map((f, i) => f <= 0.5 ? i : -1).filter(i => i !== -1);
-        const filteredFreqs = filteredIndices.map(i => freqs[i]);
-        const filteredPsd = filteredIndices.map(i => psd[i]);
-        
-        // Update chart data
-        spectrumChart.data.labels = filteredFreqs;
-        spectrumChart.data.datasets[0].data = filteredPsd;
-        
-        // Add vertical line for breathing frequency
-        const respiratoryBand = {
-          type: 'box',
-          xMin: 0.1,
-          xMax: 0.5,
-          backgroundColor: 'rgba(0, 255, 0, 0.1)',
-          borderColor: 'transparent'
-        };
-        
-        const breathingLine = {
-          type: 'line',
-          xMin: breathingFreq,
-          xMax: breathingFreq,
-          borderColor: 'red',
-          borderWidth: 2
-        };
-        
-        spectrumChart.options.plugins = {
-          annotation: {
-            annotations: {
-              respiratoryBand,
-              breathingLine
-            }
-          }
-        };
-        
-        spectrumChart.update();
       }
       
       function disconnect() {
@@ -945,7 +1066,8 @@
       
       function resetData() {
         console.log('Reset button clicked');
-        
+        // Don't disable the save button if we had data that was reset
+        saveButton.disabled = !(rrIntervals.length > 0 || breathingRates.length > 0);
         // Reset data arrays
         ecgDataPoints = [];
         rrIntervals = [];
@@ -979,6 +1101,95 @@
         dataPointsElement.textContent = '0';
         
         updateStatus('Data reset complete');
+      }
+      function saveData() {
+        // Only proceed if we have some data
+        if (rrIntervals.length === 0 && breathingRates.length === 0) {
+          updateStatus('No data to save');
+          return;
+        }
+        
+        try {
+          // Create data objects
+          const rrData = {
+            timestamps: rrTimes,
+            intervals: rrIntervals,
+            timeUnit: 'seconds',
+            intervalUnit: 'milliseconds'
+          };
+          
+          const breathingData = {
+            timestamps: breathingTimes,
+            rates: breathingRates,
+            timeUnit: 'seconds',
+            rateUnit: 'breaths/min'
+          };
+          
+          // Format timestamp for filename
+          const now = new Date();
+          const dateString = now.toISOString().replace(/[:.]/g, '-').slice(0, 19);
+          
+          // Create and save RR intervals file
+          if (rrIntervals.length > 0) {
+            // Format RR data as CSV
+            let rrCsv = 'timestamp,rr_interval\n';
+            for (let i = 0; i < rrIntervals.length; i++) {
+              rrCsv += `${rrTimes[i]},${rrIntervals[i]}\n`;
+            }
+            
+            // Create download link
+            createAndDownloadFile(rrCsv, `polar_h10_rr_intervals_${dateString}.csv`);
+          }
+          
+          // Create and save breathing rate file
+          if (breathingRates.length > 0) {
+            // Format breathing data as CSV
+            let breathingCsv = 'timestamp,breathing_rate\n';
+            for (let i = 0; i < breathingRates.length; i++) {
+              breathingCsv += `${breathingTimes[i]},${breathingRates[i]}\n`;
+            }
+            
+            // Create download link
+            createAndDownloadFile(breathingCsv, `polar_h10_breathing_rate_${dateString}.csv`);
+          }
+          
+          // Create and save combined JSON file with all data including metadata
+          const allData = {
+            recordingInfo: {
+              startTime: new Date(Date.now() - (lastRrTime * 1000)).toISOString(),
+              endTime: new Date().toISOString(),
+              deviceName: device ? device.name : 'Unknown',
+              dataPoints: rrIntervals.length
+            },
+            rrData: rrData,
+            breathingData: breathingData
+          };
+          
+          createAndDownloadFile(
+            JSON.stringify(allData, null, 2), 
+            `polar_h10_all_data_${dateString}.json`
+          );
+          
+          updateStatus('Data saved successfully');
+        } catch (error) {
+          console.error('Error saving data:', error);
+          updateStatus(`Error saving data: ${error.message}`);
+        }
+      }
+
+      // Helper function to create and trigger download
+      function createAndDownloadFile(content, filename) {
+        const blob = new Blob([content], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => {
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }, 100);
       }
       
       function updateStatus(message) {
